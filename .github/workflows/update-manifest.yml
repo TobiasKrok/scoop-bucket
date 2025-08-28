@@ -1,0 +1,108 @@
+name: Update Scoop Manifest
+
+on:
+  repository_dispatch:
+    types: [update-manifest]
+
+jobs:
+  update-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout scoop-bucket
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      
+      - name: Get release info
+        id: release
+        run: |
+          VERSION="${{ github.event.client_payload.version }}"
+          VERSION_CLEAN="${VERSION#v}"  # Remove 'v' prefix
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_clean=${VERSION_CLEAN}" >> $GITHUB_OUTPUT
+          echo "Processing release ${VERSION} (clean: ${VERSION_CLEAN})..."
+          
+          # Get release data from GitHub API
+          echo "Fetching release data..."
+          RELEASE_DATA=$(curl -s https://api.github.com/repos/TobiasKrok/sultengutt/releases/tags/${VERSION})
+          
+          if echo "$RELEASE_DATA" | grep -q "Not Found"; then
+            echo "Error: Release ${VERSION} not found"
+            exit 1
+          fi
+          
+          # Extract Windows URL
+          echo "Extracting Windows asset URL..."
+          WINDOWS_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | contains("windows-amd64.zip")) | .browser_download_url')
+          
+          if [ -z "$WINDOWS_URL" ] || [ "$WINDOWS_URL" = "null" ]; then
+            echo "Error: Could not find Windows binary in release"
+            echo "Available assets:"
+            echo "$RELEASE_DATA" | jq -r '.assets[].name'
+            exit 1
+          fi
+          
+          echo "Found Windows URL: $WINDOWS_URL"
+          
+          # Download and calculate SHA256
+          echo "Downloading and calculating checksum..."
+          curl -L "$WINDOWS_URL" -o windows.zip
+          SHA256=$(sha256sum windows.zip | cut -d' ' -f1)
+          
+          echo "Checksum calculated: $SHA256"
+          
+          echo "windows_url=${WINDOWS_URL}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+      
+      - name: Update Manifest
+        run: |
+          echo "Generating new manifest..."
+          mkdir -p bucket
+          cat > bucket/sultengutt.json << EOF
+          {
+              "version": "${{ steps.release.outputs.version_clean }}",
+              "description": "Cross-platform desktop reminder for ordering surprise dinners",
+              "homepage": "https://github.com/TobiasKrok/sultengutt",
+              "license": "MIT",
+              "architecture": {
+                  "64bit": {
+                      "url": "${{ steps.release.outputs.windows_url }}",
+                      "hash": "${{ steps.release.outputs.sha256 }}"
+                  }
+              },
+              "bin": "sultengutt.exe",
+              "pre_uninstall": [
+                  "& \"\$dir\\\\sultengutt.exe\" uninstall --confirm 2>\$null | Out-Null"
+              ],
+              "checkver": {
+                  "github": "https://github.com/TobiasKrok/sultengutt"
+              },
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/TobiasKrok/sultengutt/releases/download/v\$version/sultengutt-windows-amd64.zip"
+                      }
+                  }
+              },
+              "post_install": [
+                  "Write-Host 'To set up Sultengutt, run: sultengutt install' -ForegroundColor Green",
+                  "Write-Host 'To check status: sultengutt status' -ForegroundColor Green"
+              ]
+          }
+          EOF
+          
+          echo "Manifest updated successfully"
+      
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add bucket/sultengutt.json
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update sultengutt to ${{ steps.release.outputs.version_clean }}"
+            git push
+            echo "Manifest updated and pushed successfully"
+          fi
