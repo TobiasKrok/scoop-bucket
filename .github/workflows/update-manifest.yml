@@ -33,7 +33,7 @@ jobs:
           
           # Extract Windows URL
           echo "Extracting Windows asset URL..."
-          WINDOWS_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | contains("windows-amd64.zip")) | .browser_download_url')
+          WINDOWS_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | contains("windows-amd64.zip") and (.name | contains(".sha256") | not)) | .browser_download_url')
           
           if [ -z "$WINDOWS_URL" ] || [ "$WINDOWS_URL" = "null" ]; then
             echo "Error: Could not find Windows binary in release"
